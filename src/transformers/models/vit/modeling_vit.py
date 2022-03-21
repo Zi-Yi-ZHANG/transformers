@@ -80,7 +80,8 @@ class ViTEmbeddings(nn.Module):
     def __init__(self, config, use_mask_token: bool = False) -> None:
         super().__init__()
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
+        # suppose image_size=224, num_channels=3, patch_size=16, hidden_size=768
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))    # torch.size(1,1,768)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size)) if use_mask_token else None
         self.patch_embeddings = PatchEmbeddings(
             image_size=config.image_size,
@@ -89,7 +90,7 @@ class ViTEmbeddings(nn.Module):
             embed_dim=config.hidden_size,
         )
         num_patches = self.patch_embeddings.num_patches
-        self.position_embeddings = nn.Parameter(torch.zeros(1, num_patches + 1, config.hidden_size))
+        self.position_embeddings = nn.Parameter(torch.zeros(1, num_patches + 1, config.hidden_size))    # (1,197,768)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.config = config
 
@@ -130,8 +131,9 @@ class ViTEmbeddings(nn.Module):
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         interpolate_pos_encoding: bool = False,
     ) -> torch.Tensor:
-        batch_size, num_channels, height, width = pixel_values.shape
-        embeddings = self.patch_embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding)
+        # suppose batch_size=10
+        batch_size, num_channels, height, width = pixel_values.shape    # (10,3,224,224)
+        embeddings = self.patch_embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding) # (10,196,768)
 
         batch_size, seq_len, _ = embeddings.size()
         if bool_masked_pos is not None:
@@ -141,14 +143,14 @@ class ViTEmbeddings(nn.Module):
             embeddings = embeddings * (1.0 - mask) + mask_tokens * mask
 
         # add the [CLS] token to the embedded patch tokens
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        embeddings = torch.cat((cls_tokens, embeddings), dim=1)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # (10,1,768)
+        embeddings = torch.cat((cls_tokens, embeddings), dim=1) # (10,197,768)
 
         # add positional encoding to each token
         if interpolate_pos_encoding:
             embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
         else:
-            embeddings = embeddings + self.position_embeddings
+            embeddings = embeddings + self.position_embeddings  # broadcasting sum, (10,197,768)
 
         embeddings = self.dropout(embeddings)
 
@@ -171,22 +173,26 @@ class PatchEmbeddings(nn.Module):
         embed_dim: int = 768,
     ):
         super().__init__()
-        image_size = to_2tuple(image_size)
-        patch_size = to_2tuple(patch_size)
-        num_patches = (image_size[1] // patch_size[1]) * (image_size[0] // patch_size[0])
+        image_size = to_2tuple(image_size)  # (224,224)
+        patch_size = to_2tuple(patch_size)  # (16,16)
+        num_patches = (image_size[1] // patch_size[1]) * (image_size[0] // patch_size[0])   # (224/16)^2=196
         self.image_size = image_size
         self.patch_size = patch_size
         self.num_patches = num_patches
 
+        # do linear projection, another way is frist flatten matrix, then...
         self.projection = nn.Conv2d(num_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, pixel_values: torch.Tensor, interpolate_pos_encoding: bool = False) -> torch.Tensor:
-        batch_size, num_channels, height, width = pixel_values.shape
+        batch_size, num_channels, height, width = pixel_values.shape    # (10,3,224,224)
         if not interpolate_pos_encoding:
             if height != self.image_size[0] or width != self.image_size[1]:
                 raise ValueError(
                     f"Input image size ({height}*{width}) doesn't match model ({self.image_size[0]}*{self.image_size[1]})."
                 )
+        # self.projection -> (10,768,14,14)
+        # flatten(start_dim=0,end_dim=-1): flatten(2)-> (10,768,196)
+        # transpose(1,2) -> (10,196,768)
         x = self.projection(pixel_values).flatten(2).transpose(1, 2)
         return x
 
@@ -200,9 +206,9 @@ class ViTSelfAttention(nn.Module):
                 f"heads {config.num_attention_heads}."
             )
 
-        self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
-        self.all_head_size = self.num_attention_heads * self.attention_head_size
+        self.num_attention_heads = config.num_attention_heads   # 12
+        self.attention_head_size = int(config.hidden_size / config.num_attention_heads) # 64
+        self.all_head_size = self.num_attention_heads * self.attention_head_size    # 768
 
         self.query = nn.Linear(config.hidden_size, self.all_head_size, bias=config.qkv_bias)
         self.key = nn.Linear(config.hidden_size, self.all_head_size, bias=config.qkv_bias)
